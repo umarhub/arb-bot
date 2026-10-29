@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Optional
 from dotenv import load_dotenv
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Ensure unbuffered output so print statements display immediately
 sys.stdout.reconfigure(line_buffering=True)
@@ -24,7 +25,7 @@ BOT_WALLET_PUBKEY = os.getenv("BOT_WALLET_PUBKEY")
 
 # Configuration
 CONFIG = {
-    "jupiter_api_url": "https://quote-api.jup.ag/v6",  # This will be overridden if it fails
+    "jupiter_api_url": "https://quote-api.jup.ag/v6",
     "capital_usd": 1000.0,
     "max_position_fraction": 0.1,
     "min_profit_bps": 10,
@@ -46,7 +47,6 @@ FALLBACK_PRICES = {
 async def get_price_from_jupiter(input_mint: str, output_mint: str, amount: float = 1):
     """Get price from Jupiter API with fallback"""
     try:
-        # Try the original URL first
         url = f"{CONFIG['jupiter_api_url']}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps={CONFIG['slippage_bps']}"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
@@ -63,7 +63,6 @@ async def get_price_from_jupiter(input_mint: str, output_mint: str, amount: floa
 async def get_token_price(token_address: str):
     """Get token price using Jupiter API or fallback"""
     try:
-        # Use USDC as the output mint for price
         price = await get_price_from_jupiter(token_address, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 1)
         if price:
             return price
@@ -122,8 +121,32 @@ async def scan_loop():
             print(f"Error: {e}", flush=True)
             await asyncio.sleep(300)  # Wait 5 minutes before retrying
 
+# Simple HTTP server to keep Render free tier happy
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Solana Arbitrage Bot is running")
+
+    def log_message(self, format, *args):
+        pass  # Suppress HTTP server logs
+
+def start_health_check_server():
+    """Start a simple HTTP server on port 8080 to satisfy Render's port requirement"""
+    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)
+    print("✅ Health check server running on port 8080", flush=True)
+    server.serve_forever()
+
 if __name__ == "__main__":
     if not RPC_URL:
         print("CRITICAL: HELIUS_RPC_URL not set in .env", flush=True)
         sys.exit(1)
+
+    # Start the health check server in a separate thread
+    import threading
+    health_thread = threading.Thread(target=start_health_check_server, daemon=True)
+    health_thread.start()
+
+    # Start the bot scanning loop
     asyncio.run(scan_loop())
